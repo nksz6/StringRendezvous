@@ -11,7 +11,6 @@ import com.programix.thread.*;
 
 //Provided class
 public class StringHandoffImpl implements StringHandoff {
-
     //Additions:
     //State Variables:
     private String message = null;  //holds the message being passed from one thread to another.
@@ -32,24 +31,17 @@ public class StringHandoffImpl implements StringHandoff {
     public StringHandoffImpl() {
     }
 
-    //Provided
+    //Pass Method
     @Override
-    public synchronized void pass(String msg, long msTimeout)
-        throws InterruptedException, TimedOutException, ShutdownException, IllegalStateException {
+    public synchronized void pass(String msg, long msTimeout) throws InterruptedException, TimedOutException, ShutdownException, IllegalStateException {
 
         //Additions:
-        //Initial Checks:
 
-        //Timeout Check
-        //initially implement this method to throw a RuntimeException if a non-zero timeout is provided.
-        //(Replace later)
-        if(msTimeout != 0L) {
-            throw new RuntimeException("Non-zero timeout is not YET supported."); //For now, throw RunTime exception for non-zero timeouts.
-        }
+        //Initial Checks:
 
         //Shutdown Check
         //If the StringHandoff has been shutdown, if so immediately throw a ShutdownException.
-        //Check for shutdown
+        //Check for shutdown - 2nd precedence but no wait() yet.
         if (isShutdown) {
             throw new ShutdownException();
         }
@@ -57,7 +49,7 @@ public class StringHandoffImpl implements StringHandoff {
         //Single Passer Check
         //Check to make sure another thread isn't already in the process of passing
         if (isPassing) {
-            throw new IllegalStateException("Another thread is already passing."); //If so, throw an Illegal State Exception
+            throw new IllegalStateException("Another thread is already passing a message."); //If so, throw an Illegal State Exception
         }
 
         //If initial checks passed, we can start passing.
@@ -67,51 +59,98 @@ public class StringHandoffImpl implements StringHandoff {
         isPassing = true;
 
         //If there's already a message in the slot (message != null) and there isn't a shutdown,
-        //release the lock until another thread calls notify() or notifyAll() (reciever picks it up)
+        //release the lock until another thread calls notify() or notifyAll() (receiver picks it up)
         try {
-            //wait until there is a receiver
-            while (message != null && !isShutdown) {
-                wait();
+
+            //Timeout check!
+            //Calculate end time for timeout
+            long msEndTime;             //msEndTime stores the time-stamp of when the timeout will expire.
+            if (msTimeout == 0L) {      //check if msTimeout is 0L (never timeout or wait 'infinitely')
+                msEndTime = Long.MAX_VALUE; //in that case, set msEndTime to Long.MAX_VALUE
+            } else {
+                //if msTimeout is not 'infinity'
+                msEndTime = System.currentTimeMillis() + msTimeout; //set the endtime to the current time, plus the time when the timeout should expire
+            }
+            //Above is equivalent to:
+            //long msEndTime = msTimeout == 0L ? Long.MAX_VALUE : System.currentTimeMillis() + msTimeout;
+            //msEndTime = msTimeout == 0L ? Long.MAX_VALUE : System.currentTimeMillis() + msTimeout;
+
+            //wait until there is a receiver or timeout
+            while (message != null && !isShutdown) {    //while message is not null and no shutdown
+                if (msTimeout == 0L) { //if timeout is 'infinite'
+                    wait();     //wait indefinitely
+                } else {    //if not infinite, the time remaining is taking the time remaining calculation - the current time
+                    long msRemaining = msEndTime - System.currentTimeMillis();
+
+                    //if no time remains, throw a TimeoutException
+                    if (msRemaining <= 0) {
+                        throw new TimedOutException("timed out, no time remaining.");
+                    }
+
+                    //Note: because of the way I'm doing this,
+                    //it shouldn't matter if the msTimeout was negative,
+                    //because if the timeout was already supposed to happen,
+                    //thats a timeout exception.
+                    //otherwise, call wait for the remaining time.
+                    wait(msRemaining);
+                }
+
+                //Post-'wait()' Checking conditions after waking up.
+
+                //After waking up from the wait, first make sure there are no interuptions
+                //1st Precedence
+                if (Thread.interrupted()) {
+                    throw new InterruptedException();
+                }
+                //then check for shutdown
+                //2nd Precedence
+                if (isShutdown) {
+                    throw new ShutdownException();
+                }
             }
 
-            //Post-'wait()' Checks
-            //After waking up from the wait, make sure there aren't any interruptions or shutdowns.
-            if (Thread.interrupted()) {
-                throw new InterruptedException();
-            }
-            //check for shutdown after waking up
-            if (isShutdown) {
-                throw new ShutdownException();
-            }
-
-            //Store Message and Notify
-            //store the message in the shared variable and notify all waiting threads (including potential recievers) that theres a change in state.
+            //Store Message and Notify receivers
+            //store the message in the shared variable and notify all waiting threads
+            //(which includes potential receivers), that there's a change in state.
             message = msg;
             notifyAll();
-
             //Wait until message is picked up
-            while(message != null && !isShutdown) {
-                wait();
-            }
+            while(message != null && !isShutdown) { //while message is not null and no shutdown
+                if (msTimeout == 0L) { //if msTimeout is infinite
+                    wait(); //wait indefinitely
+                } else { //else
+                    //redeclare msRemaining since this is another else block
+                    long msRemaining = msEndTime - System.currentTimeMillis();
+                    if (msRemaining <= 0) { //if time remaining is less than or equal to zero
+                        //throw exception as before.
+                        throw new TimedOutException("timed out, no time remaining.");
+                    }
+                    //otherwise wait out the remaining time
+                    wait(msRemaining);
+                }
+                //Most post-'wait()' checks
+                //After waking up from the wait, make sure there still aren't any interruptions or shutdowns as before.
 
-            //Most post-'wait()' checks
-            //After waking up from the wait, make sure there still aren't any interruptions or shutdowns as before.
-            if (Thread.interrupted()) {
-                throw new InterruptedException();
+                //InterruptedException - 1st precedence
+                if (Thread.interrupted()) {
+                    throw new InterruptedException();
+                }
+                //ShutdownException - 2nd precedence
+                if (isShutdown) {
+                    throw new ShutdownException();
+                }
             }
-            if (isShutdown) {
-                throw new ShutdownException();
-            }
-
             //Finally, make sure the isPassing flag gets reset.
             //Happens even if there was an exception so that the system doesn't get stuck.
         } finally {
-            //always reset the isPassing flag before exiting
+
+            //reset the passing flag before exiting, even if an exception was thrown.
             isPassing = false;
         }
     }
 
-    //Provided No-Timeout Method for pass
+
+    //Provided
     @Override
     public synchronized void pass(String msg) throws InterruptedException, ShutdownException, IllegalStateException {
 
@@ -120,17 +159,12 @@ public class StringHandoffImpl implements StringHandoff {
     }
 
 
-    //Provided
+    //Receive Method
     @Override
     public synchronized String receive(long msTimeout)
         throws InterruptedException, TimedOutException, ShutdownException, IllegalStateException {
 
         //Additions
-
-        //Timeout Check
-        //For now, throw RuntimeException for non-zero timeouts
-        //(Change Later)
-        if (msTimeout != 0L) throw new RuntimeException("non-zero timeout is not YET supported");
 
         //Shutdown Check
         //Make sure StringHandoff hasn't been shutdown, if so throw a ShutdownException.
@@ -139,29 +173,58 @@ public class StringHandoffImpl implements StringHandoff {
             throw new ShutdownException();
         }
 
-        //Recieving Check
+        //Receiving Check
         //Check if another thread is already receiving, if so throw IllegalStateException.
         if (isReceiving) {
             throw new IllegalStateException("Another thread is already receiving a message");
         }
 
-        //Set Recieving flag
-        //Mark that we are ready to receive
+        //Set Receiving flag that we're ready to receive
         isReceiving = true;
 
+        //start of try block
         try {
-            //Wait until there's a message available ('message == null') and String Handoff isn't shutdown.
-            while (message == null && !isShutdown) {
-                wait();
-            }
 
-            //Check for interrupt or shutdown after waking up
-            if (Thread.interrupted()) {
-                throw new InterruptedException();
+          //Timeout check!
+          //see comments in pass function
+            long msEndTime;
+            if (msTimeout == 0L) {
+                msEndTime = Long.MAX_VALUE;
+            } else {
+                msEndTime = System.currentTimeMillis() + msTimeout; //set the end-time to the current time, plus the time when the timeout should expire
             }
+            //equivalent to:
+            //long msEndTime = msTimeout == 0L ? Long.MAX_VALUE : System.currentTimeMillis() + msTimeout;
+
+
+            //Wait until there's a message available ('message == null') and String Hand-off isn't shutdown.
+            while (message == null && !isShutdown) {
+                if (msTimeout == 0L) {
+                    wait();
+                } else {
+                    //calling it 'msTimeRemaining' this time
+                    long msTimeRemaining = (msEndTime - System.currentTimeMillis());
+                    if (msTimeRemaining <= 0) {
+                        throw new TimedOutException("timed out, no time remaining.");
+                    }
+                    wait(msTimeRemaining);
+                } //end of else
+
+                //Check for interrupt or shutdown after waking up (in order of precedence)
+                if (Thread.interrupted()) {
+                    throw new InterruptedException();
+                }
+                if (isShutdown) {
+                    throw new ShutdownException();
+                }
+            } //end of while
+
+            //check for shutdown again if in-case it ended early.
             if (isShutdown) {
                 throw new ShutdownException();
             }
+
+            //otherwise should have a message
 
             //Save the message as 'result
             String result = message;
@@ -183,7 +246,7 @@ public class StringHandoffImpl implements StringHandoff {
     }
 
 
-    //Provided No-Timeout Method for recieve
+    //Provided
     @Override
     public synchronized String receive() throws InterruptedException, ShutdownException, IllegalStateException {
 
